@@ -4,6 +4,7 @@ export interface SimulationConfig {
     tau: number;
     alpha: number;
     beta1: number;
+    noiseSigma: number;
 }
 
 export interface SimulationMetrics {
@@ -193,7 +194,17 @@ export class ArnoldSimulation {
             w[j] -= 2 * eps;
             const m = this.getLossAndA(w).loss;
             w[j] += eps;
-            grad[j] = (p - m) / (2 * eps);
+            let gj = (p - m) / (2 * eps);
+            
+            if (this.cfg.noiseSigma > 0) {
+                let u = 0, v = 0;
+                while(u === 0) u = Math.random();
+                while(v === 0) v = Math.random();
+                const noise = Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
+                gj += this.cfg.noiseSigma * noise;
+            }
+            
+            grad[j] = gj;
         }
         return { grad, A: base.A };
     }
