@@ -9,6 +9,34 @@ import { Play, RotateCcw, Activity, Settings, Cpu, Download, Video } from 'lucid
 import Link from 'next/link';
 import { ArnoldSimulation, SimulationConfig, SimulationResult, SimulationMetrics } from '@/lib/engine';
 
+function getSpectralColor(v: number): [number, number, number] {
+    const val = Math.min(1, Math.max(0, v));
+    const stops = [
+        { offset: 0.0, r: 15, g: 23, b: 42 },      // slate-900 background
+        { offset: 0.12, r: 67, g: 56, b: 202 },    // indigo-700
+        { offset: 0.28, r: 37, g: 99, b: 235 },    // blue-600
+        { offset: 0.45, r: 6, g: 182, b: 212 },    // cyan-500
+        { offset: 0.60, r: 16, g: 185, b: 129 },   // emerald-500
+        { offset: 0.72, r: 234, g: 179, b: 8 },    // yellow-500
+        { offset: 0.85, r: 249, g: 115, b: 22 },   // orange-500
+        { offset: 0.95, r: 239, g: 68, b: 68 },    // red-500
+        { offset: 1.0, r: 255, g: 255, b: 255 },   // white highlight
+    ];
+    for (let i = 0; i < stops.length - 1; i++) {
+        const s1 = stops[i];
+        const s2 = stops[i + 1];
+        if (val >= s1.offset && val <= s2.offset) {
+            const range = s2.offset - s1.offset;
+            const t = (val - s1.offset) / (range || 1);
+            const r = Math.floor(s1.r + t * (s2.r - s1.r));
+            const g = Math.floor(s1.g + t * (s2.g - s1.g));
+            const b = Math.floor(s1.b + t * (s2.b - s1.b));
+            return [r, g, b];
+        }
+    }
+    return [255, 255, 255];
+}
+
 function AttentionHeatmap({ 
     data, L, title 
 }: { 
@@ -29,11 +57,11 @@ function AttentionHeatmap({
             // Apply gamma curve to boost faint resonance scatter structures
             const v = Math.pow(norm, 0.4);
             
-            // "Hot" Colormap: Black -> Red -> Orange/Yellow -> White
-            imgData.data[i*4] = Math.floor(255 * Math.min(1, v * 2));       // R
-            imgData.data[i*4+1] = Math.floor(255 * Math.max(0, v * 2 - 1)); // G
-            imgData.data[i*4+2] = Math.floor(255 * Math.max(0, v * 3 - 2)); // B
-            imgData.data[i*4+3] = 255;                                      // A
+            const [r, g, b] = getSpectralColor(v);
+            imgData.data[i*4] = r;
+            imgData.data[i*4+1] = g;
+            imgData.data[i*4+2] = b;
+            imgData.data[i*4+3] = 255;
         }
         ctx.putImageData(imgData, 0, 0);
     }, [data, L]);
@@ -71,6 +99,8 @@ export default function ArnoldDiffusionSandbox() {
     // Engine refs
     const simRef = useRef<ArnoldSimulation | null>(null);
     const animRef = useRef<number>(0);
+    const pointsRef = useRef<SimulationMetrics[]>([]);
+    const lastUpdateRef = useRef<number>(0);
     
     // UI state
     const [isRunning, setIsRunning] = useState(false);
@@ -79,13 +109,14 @@ export default function ArnoldDiffusionSandbox() {
     const [progress, setProgress] = useState(0);
 
     // Export state
-    const [exportFps, setExportFps] = useState(30);
+    const [exportSampleRate, setExportSampleRate] = useState(1);
     const [isExporting, setIsExporting] = useState(false);
     const recordedFrames = useRef<{AhA: Float64Array, AhB: Float64Array}[]>([]);
+    const chunkCountRef = useRef(0);
 
     useEffect(() => {
         return () => {
-            if(animRef.current) cancelAnimationFrame(animRef.current);
+            if(animRef.current) clearTimeout(animRef.current);
         };
     }, []);
 
@@ -93,38 +124,52 @@ export default function ArnoldDiffusionSandbox() {
         if (!simRef.current) return;
         const result = simRef.current.stepForward(20);
         
-        recordedFrames.current.push({
-            AhA: new Float64Array(result.AhA),
-            AhB: new Float64Array(result.AhB)
-        });
+        chunkCountRef.current++;
+        if (chunkCountRef.current % exportSampleRate === 0) {
+            recordedFrames.current.push({
+                AhA: new Float64Array(result.AhA),
+                AhB: new Float64Array(result.AhB)
+            });
+        }
 
-        setPoints(prev => {
-            const next = [...prev, ...result.metrics];
-            return next;
-        });
+        pointsRef.current.push(...result.metrics);
+
+        const now = performance.now();
+        // Throttle charting states to keep rendering cycles lightweight (at most once per 350ms)
+        if (now - lastUpdateRef.current > 350 || result.done) {
+            setPoints([...pointsRef.current]);
+            lastUpdateRef.current = now;
+        }
+
         setProgress(result.step / 5000);
         setHeatmaps({ AhA: result.AhA, AhB: result.AhB });
         
         if (!result.done) {
-            animRef.current = requestAnimationFrame(chunkStep);
+            // Yield the main thread to ensure GUI responsiveness & immediate interruption of run
+            animRef.current = window.setTimeout(chunkStep, 10) as any;
         } else {
+            setPoints([...pointsRef.current]);
             setIsRunning(false);
         }
-    }, []);
+    }, [exportSampleRate]);
 
     const startSim = () => {
-        if(animRef.current) cancelAnimationFrame(animRef.current);
+        if(animRef.current) clearTimeout(animRef.current);
+        pointsRef.current = [];
         setPoints([]);
         setProgress(0);
         setHeatmaps({ AhA: null, AhB: null });
+        recordedFrames.current = [];
+        chunkCountRef.current = 0;
         simRef.current = new ArnoldSimulation(cfg);
         setIsRunning(true);
-        animRef.current = requestAnimationFrame(runChunk);
+        lastUpdateRef.current = performance.now();
+        animRef.current = window.setTimeout(runChunk, 0) as any;
     };
 
     const stopSim = () => {
         setIsRunning(false);
-        if (animRef.current) cancelAnimationFrame(animRef.current);
+        if (animRef.current) clearTimeout(animRef.current);
     };
 
     const exportWebM = async () => {
@@ -143,7 +188,7 @@ export default function ArnoldDiffusionSandbox() {
             const ctx = canvas.getContext('2d');
             if (!ctx) throw new Error("Could not get 2D context");
 
-            const stream = canvas.captureStream(exportFps);
+            const stream = canvas.captureStream(30);
             
             let mimeType = '';
             const types = ['video/webm;codecs=vp9', 'video/webm', 'video/mp4'];
@@ -179,9 +224,10 @@ export default function ArnoldDiffusionSandbox() {
                     for(let i=0; i<L * L; i++) {
                         const norm = Math.min(1, Math.max(0, data[i] / 0.4));
                         const v = Math.pow(norm, 0.4);
-                        imgData.data[i*4] = Math.floor(255 * Math.min(1, v * 2));
-                        imgData.data[i*4+1] = Math.floor(255 * Math.max(0, v * 2 - 1));
-                        imgData.data[i*4+2] = Math.floor(255 * Math.max(0, v * 3 - 2));
+                        const [r, g, b] = getSpectralColor(v);
+                        imgData.data[i*4] = r;
+                        imgData.data[i*4+1] = g;
+                        imgData.data[i*4+2] = b;
                         imgData.data[i*4+3] = 255;
                     }
                     const tempCanvas = document.createElement('canvas');
@@ -196,7 +242,7 @@ export default function ArnoldDiffusionSandbox() {
                 drawHeatmap(frame.AhA, 0, yOffset);
                 drawHeatmap(frame.AhB, size + gap, yOffset);
 
-                await new Promise(r => setTimeout(r, 1000 / exportFps));
+                await new Promise(r => setTimeout(r, 1000 / 30));
             }
 
             await new Promise(r => setTimeout(r, 500));
@@ -313,16 +359,21 @@ export default function ArnoldDiffusionSandbox() {
                         Video Export
                     </h2>
                     <div className="space-y-4">
-                        <div className="space-y-1">
+                        <div className="space-y-2">
                             <label className="text-xs font-medium text-slate-400 flex justify-between">
-                                <span>Export Frame Rate</span>
-                                <span className="text-slate-200">{exportFps} FPS</span>
+                                <span>Sampling Rate</span>
+                                <span className="text-slate-200">
+                                    {exportSampleRate === 1 ? '1 frame per run (All)' : `1 frame every ${exportSampleRate} runs`}
+                                </span>
                             </label>
                             <input 
-                                type="range" min="10" max="60" step="5" value={exportFps} 
-                                onChange={e => setExportFps(+e.target.value)}
+                                type="range" min="1" max="10" step="1" value={exportSampleRate} 
+                                onChange={e => setExportSampleRate(+e.target.value)}
                                 disabled={isExporting || isRunning} className="w-full accent-emerald-500"
                             />
+                            <p className="text-[10px] text-slate-500 leading-normal">
+                                Determines how frequently snapshots of the attention matrices are captured. Higher values result in smaller file sizes and faster exports.
+                            </p>
                         </div>
                         <button
                             onClick={exportWebM}
@@ -334,7 +385,7 @@ export default function ArnoldDiffusionSandbox() {
                             }`}
                         >
                             <Download className="w-4 h-4" />
-                            <span>{isExporting ? 'Encoding Video...' : 'Export WebM'}</span>
+                            <span>{isExporting ? 'Encoding Video...' : `Export WebM (${recordedFrames.current.length} frames)`}</span>
                         </button>
                     </div>
                 </div>

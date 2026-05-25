@@ -4,7 +4,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { 
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer 
 } from 'recharts';
-import { Activity, Play, RotateCcw } from 'lucide-react';
+import { Activity, Play, RotateCcw, Download } from 'lucide-react';
 import Link from 'next/link';
 import { ArnoldSimulation } from '@/lib/engine';
 
@@ -65,6 +65,34 @@ export default function SweepPage() {
         cancelRef.current = true;
     };
 
+    const exportCSV = () => {
+        if (points.length === 0) return;
+        const headers = [
+            'Sequence Length (L)', 
+            'Max Gradient Shock (Trial A Geometric)', 
+            'Max Gradient Shock (Trial B Algebraic)', 
+            'Terminal Parameter Drift (Trial A Geometric)', 
+            'Terminal Parameter Drift (Trial B Algebraic)'
+        ];
+        const rows = points.map(p => [
+            p.L,
+            p.maxGradA,
+            p.maxGradB,
+            p.driftA,
+            p.driftB
+        ]);
+        const csvContent = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.setAttribute('href', url);
+        link.setAttribute('download', `context_length_sweep_${Date.now()}.csv`);
+        link.style.visibility = 'hidden';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    };
+
     return (
         <div className="min-h-screen bg-slate-900 text-slate-100 font-sans p-6 md:p-8 flex flex-col items-center">
             <div className="w-full max-w-6xl space-y-8">
@@ -89,7 +117,7 @@ export default function SweepPage() {
                     </div>
                 </div>
 
-                <div className="flex gap-4">
+                <div className="flex flex-wrap gap-4">
                     <button
                         onClick={isRunning ? stopSweep : runSweep}
                         className={`py-2 px-6 rounded-md text-sm font-bold transition-colors flex items-center gap-2 
@@ -99,6 +127,19 @@ export default function SweepPage() {
                         {isRunning ? <RotateCcw className="w-4 h-4" /> : <Play className="w-4 h-4 ml-1" />}
                         {isRunning ? 'Stop Sweep' : 'Run Context Sweep'}
                     </button>
+                    
+                    <button
+                        onClick={exportCSV}
+                        disabled={isRunning || points.length === 0}
+                        className={`py-2 px-6 rounded-md text-sm font-bold transition-colors flex items-center gap-2 border
+                            ${isRunning || points.length === 0 
+                                ? 'bg-slate-800 text-slate-500 border-slate-700 cursor-not-allowed' 
+                                : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/50 hover:bg-emerald-500/20 shadow-md'}`}
+                    >
+                        <Download className="w-4 h-4" />
+                        Export CSV
+                    </button>
+
                     {isRunning && currentL !== null && (
                         <div className="flex items-center text-sm font-medium text-slate-300 bg-slate-800 px-4 py-2 rounded-md border border-slate-700">
                             Processing L = {currentL}...
