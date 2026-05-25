@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
-  ScatterChart, Scatter, ZAxis
+  ScatterChart, Scatter, ZAxis, BarChart, Bar
 } from 'recharts';
 import { Play, RotateCcw, Activity, Settings, Cpu, Download, Video } from 'lucide-react';
 import Link from 'next/link';
@@ -85,6 +85,80 @@ function AttentionHeatmap({
     );
 }
 
+interface HistogramBin {
+    binStart: number;
+    binEnd: number;
+    rangeLabel: string;
+    "A (Geometric)": number;
+    "B (Algebraic)": number;
+}
+
+function computeResonanceHistogram(data: SimulationMetrics[]) {
+    if (data.length === 0) return { bins: [] as HistogramBin[], peakA: null, peakB: null };
+    
+    const valsA = data.map(p => p.resA).filter(v => typeof v === 'number' && !isNaN(v));
+    const valsB = data.map(p => p.resB).filter(v => typeof v === 'number' && !isNaN(v));
+    
+    const allVals = [...valsA, ...valsB];
+    if (allVals.length === 0) return { bins: [] as HistogramBin[], peakA: null, peakB: null };
+    
+    const minVal = 0;
+    let maxVal = Math.max(...allVals);
+    if (maxVal <= 0) maxVal = 0.5;
+    maxVal = Math.ceil(maxVal * 10) / 10;
+    
+    const binCount = 15;
+    const step = maxVal / binCount;
+    
+    const bins: HistogramBin[] = Array.from({ length: binCount }, (_, idx) => {
+        const start = idx * step;
+        const end = (idx + 1) * step;
+        return {
+            binStart: start,
+            binEnd: end,
+            rangeLabel: `${start.toFixed(2)} - ${end.toFixed(2)}`,
+            "A (Geometric)": 0,
+            "B (Algebraic)": 0,
+        };
+    });
+    
+    valsA.forEach(v => {
+        let binIdx = Math.floor(v / step);
+        if (binIdx >= binCount) binIdx = binCount - 1;
+        if (binIdx < 0) binIdx = 0;
+        bins[binIdx]["A (Geometric)"]++;
+    });
+    
+    valsB.forEach(v => {
+        let binIdx = Math.floor(v / step);
+        if (binIdx >= binCount) binIdx = binCount - 1;
+        if (binIdx < 0) binIdx = 0;
+        bins[binIdx]["B (Algebraic)"]++;
+    });
+    
+    let peakBinA = bins[0];
+    let maxA = -1;
+    let peakBinB = bins[0];
+    let maxB = -1;
+    
+    bins.forEach(b => {
+        if (b["A (Geometric)"] > maxA) {
+            maxA = b["A (Geometric)"];
+            peakBinA = b;
+        }
+        if (b["B (Algebraic)"] > maxB) {
+            maxB = b["B (Algebraic)"];
+            peakBinB = b;
+        }
+    });
+    
+    return {
+        bins,
+        peakA: valsA.length > 0 ? { start: peakBinA.binStart, end: peakBinA.binEnd, count: maxA } : null,
+        peakB: valsB.length > 0 ? { start: peakBinB.binStart, end: peakBinB.binEnd, count: maxB } : null,
+    };
+}
+
 export default function ArnoldDiffusionSandbox() {
     // Config state
     const [cfg, setCfg] = useState<SimulationConfig>({
@@ -107,6 +181,8 @@ export default function ArnoldDiffusionSandbox() {
     const [points, setPoints] = useState<SimulationMetrics[]>([]);
     const [heatmaps, setHeatmaps] = useState<{AhA: Float64Array | null, AhB: Float64Array | null}>({AhA: null, AhB: null});
     const [progress, setProgress] = useState(0);
+
+    const { bins: histogramData, peakA, peakB } = computeResonanceHistogram(points);
 
     // Export state
     const [exportSampleRate, setExportSampleRate] = useState(1);
@@ -504,6 +580,52 @@ export default function ArnoldDiffusionSandbox() {
                             </ResponsiveContainer>
                         </div>
                     </div>
+                </div>
+
+                {/* Resonance Dwell-Time Stable Zones Histogram */}
+                <div id="resonance-dwell-time-card" className="bg-slate-800 rounded-xl p-5 border border-slate-700 flex flex-col">
+                    <div className="mb-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                        <div>
+                            <h3 className="text-sm font-semibold text-slate-200">Resonance Dwell-Time Distribution</h3>
+                            <p className="text-xs text-slate-500">Dwell-time histogram of min |⟨k, ω⟩| values across all optimization steps. High-density peaks indicate stable zones (resonant invariant tori).</p>
+                        </div>
+                        <div className="flex flex-wrap gap-2 text-xs">
+                            {peakA && (
+                                <div className="bg-slate-900 px-3 py-2 rounded-lg border border-slate-700/50 flex flex-col">
+                                    <span className="text-slate-500 text-[10px] uppercase font-semibold tracking-wider">A Peak (Stable Zone)</span>
+                                    <span className="text-rose-400 font-mono font-medium truncate">Value: [{peakA.start.toFixed(2)}, {peakA.end.toFixed(2)}]</span>
+                                </div>
+                            )}
+                            {peakB && (
+                                <div className="bg-slate-900 px-3 py-2 rounded-lg border border-slate-700/50 flex flex-col">
+                                    <span className="text-slate-500 text-[10px] uppercase font-semibold tracking-wider">B Peak (Stable Zone)</span>
+                                    <span className="text-blue-400 font-mono font-medium truncate">Value: [{peakB.start.toFixed(2)}, {peakB.end.toFixed(2)}]</span>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                    <div className="flex-1 min-h-[250px] w-full">
+                        {points.length === 0 ? (
+                            <div className="h-full min-h-[250px] flex items-center justify-center text-slate-500 text-xs py-12">
+                                No optimization data gathered yet. Ignite the optimizer to map stable zones.
+                            </div>
+                        ) : (
+                            <ResponsiveContainer width="100%" height={250}>
+                                <BarChart data={histogramData} margin={{top: 10, right: 10, left: -20, bottom: 0}}>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
+                                    <XAxis dataKey="rangeLabel" stroke="#64748b" tick={{fill: '#64748b', fontSize: 10}} tickLine={false} />
+                                    <YAxis stroke="#64748b" tick={{fill: '#64748b', fontSize: 10}} tickLine={false} axisLine={false} />
+                                    <Tooltip contentStyle={{backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '8px'}} labelStyle={{color: '#94a3b8'}} itemStyle={{fontSize: '12px'}} />
+                                    <Legend verticalAlign="top" height={36} iconType="rect" wrapperStyle={{fontSize: '12px'}} />
+                                    <Bar dataKey="A (Geometric)" fill="#f43f5e" radius={[2, 2, 0, 0]} isAnimationActive={false} opacity={0.8} />
+                                    <Bar dataKey="B (Algebraic)" fill="#3b82f6" radius={[2, 2, 0, 0]} isAnimationActive={false} opacity={0.8} />
+                                </BarChart>
+                            </ResponsiveContainer>
+                        )}
+                    </div>
+                    <p className="text-[10px] text-slate-500 mt-3 leading-relaxed">
+                        Interpretation: Non-resonant (strongly Diophantine) regions correspond to peaks further to the right. Peaks to the left capture phases where frequencies stayed close to low-order rational approximations (Arnold tongues). Comparing the geometric (A) and algebraic (B) distributions highlights which initialization stays structurally stable or avoids resonant collapse.
+                    </p>
                 </div>
 
                 {/* Visual Row 3: Heatmaps */}

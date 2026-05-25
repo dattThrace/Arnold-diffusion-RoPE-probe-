@@ -52,6 +52,18 @@ export class ArnoldSimulation {
     
     Kres: Float64Array[]; // for resonance proximity
     
+    // Pre-allocated scratchpads to prevent any allocations in hot execution loops
+    Qp_scratch: Float64Array;
+    Kp_scratch: Float64Array;
+    logits_scratch: Float64Array;
+    exps_scratch: Float64Array;
+    
+    gradA_scratch: Float64Array;
+    gradB_scratch: Float64Array;
+    
+    ahA_buffer: Float64Array;
+    ahB_buffer: Float64Array;
+    
     constructor(cfg: SimulationConfig) {
         this.cfg = cfg;
         this.k = cfg.d / 2;
@@ -100,6 +112,18 @@ export class ArnoldSimulation {
         this.vB = new Float64Array(this.k);
         
         this.Kres = this.generateKres(this.k);
+        
+        // Initialize scratchpads matching sequence length configuration
+        this.Qp_scratch = new Float64Array(cfg.L * cfg.d);
+        this.Kp_scratch = new Float64Array(cfg.L * cfg.d);
+        this.logits_scratch = new Float64Array(cfg.L);
+        this.exps_scratch = new Float64Array(cfg.L);
+        
+        this.gradA_scratch = new Float64Array(this.k);
+        this.gradB_scratch = new Float64Array(this.k);
+        
+        this.ahA_buffer = new Float64Array(cfg.L * cfg.L);
+        this.ahB_buffer = new Float64Array(cfg.L * cfg.L);
     }
     
     generateKres(k: number): Float64Array[] {
@@ -122,42 +146,46 @@ export class ArnoldSimulation {
         return res;
     }
     
-    getLossAndA(w: Float64Array): {loss: number, A: Float64Array} {
+    getLossAndA(w: Float64Array, outA: Float64Array | null): number {
         const L = this.cfg.L;
         const d = this.cfg.d;
         const k = this.k;
         const tau = this.cfg.tau;
         
-        const Qp = new Float64Array(L * d);
-        const Kp = new Float64Array(L * d);
+        const Qp = this.Qp_scratch;
+        const Kp = this.Kp_scratch;
         
         for (let m = 0; m < L; m++) {
+            const m_d = m * d;
             for (let j = 0; j < k; j++) {
+                const j2 = 2 * j;
                 const c = Math.cos(m * w[j]);
                 const s = Math.sin(m * w[j]);
-                const q0 = this.Q[m * d + 2 * j];
-                const q1 = this.Q[m * d + 2 * j + 1];
-                Qp[m * d + 2 * j] = q0 * c - q1 * s;
-                Qp[m * d + 2 * j + 1] = q0 * s + q1 * c;
+                const q0 = this.Q[m_d + j2];
+                const q1 = this.Q[m_d + j2 + 1];
+                Qp[m_d + j2] = q0 * c - q1 * s;
+                Qp[m_d + j2 + 1] = q0 * s + q1 * c;
                 
-                const k0 = this.K[m * d + 2 * j];
-                const k1 = this.K[m * d + 2 * j + 1];
-                Kp[m * d + 2 * j] = k0 * c - k1 * s;
-                Kp[m * d + 2 * j + 1] = k0 * s + k1 * c;
+                const k0 = this.K[m_d + j2];
+                const k1 = this.K[m_d + j2 + 1];
+                Kp[m_d + j2] = k0 * c - k1 * s;
+                Kp[m_d + j2 + 1] = k0 * s + k1 * c;
             }
         }
         
         let loss = 0;
-        const A = new Float64Array(L * L);
-        const logits = new Float64Array(L);
+        const logits = this.logits_scratch;
+        const exps = this.exps_scratch;
         const scale = tau * Math.sqrt(d);
         
         for (let i = 0; i < L; i++) {
+            const i_d = i * d;
             let maxL = -Infinity;
             for (let j = 0; j < L; j++) {
+                const j_d = j * d;
                 let dot = 0;
                 for (let v = 0; v < d; v++) {
-                    dot += Qp[i * d + v] * Kp[j * d + v];
+                    dot += Qp[i_d + v] * Kp[j_d + v];
                 }
                 dot = dot / scale;
                 logits[j] = dot;
@@ -165,35 +193,40 @@ export class ArnoldSimulation {
             }
             
             let sumExp = 0;
-            const exps = new Float64Array(L);
             for (let j = 0; j < L; j++) {
                 const e = Math.exp(logits[j] - maxL);
                 exps[j] = e;
                 sumExp += e;
             }
             
+            const i_L = i * L;
             for (let j = 0; j < L; j++) {
                 const p = exps[j] / sumExp;
-                A[i * L + j] = p;
-                const diff = p - this.targetA[i * L + j];
+                if (outA) {
+                    outA[i_L + j] = p;
+                }
+                const diff = p - this.targetA[i_L + j];
                 loss += diff * diff;
             }
         }
         
-        return { loss, A };
+        return loss;
     }
     
-    getGradient(w: Float64Array) {
+    getGradient(w: Float64Array, outA: Float64Array | null, gradOut: Float64Array): void {
         const eps = 1e-6;
-        const grad = new Float64Array(this.k);
-        const base = this.getLossAndA(w);
+        this.getLossAndA(w, outA);
         
         for(let j=0; j<this.k; j++) {
-            w[j] += eps;
-            const p = this.getLossAndA(w).loss;
-            w[j] -= 2 * eps;
-            const m = this.getLossAndA(w).loss;
-            w[j] += eps;
+            const original_wj = w[j];
+            
+            w[j] = original_wj + eps;
+            const p = this.getLossAndA(w, null);
+            
+            w[j] = original_wj - eps;
+            const m = this.getLossAndA(w, null);
+            
+            w[j] = original_wj;
             let gj = (p - m) / (2 * eps);
             
             if (this.cfg.noiseSigma > 0) {
@@ -204,9 +237,8 @@ export class ArnoldSimulation {
                 gj += this.cfg.noiseSigma * noise;
             }
             
-            grad[j] = gj;
+            gradOut[j] = gj;
         }
-        return { grad, A: base.A };
     }
     
     getMinDres(w: Float64Array): number {
@@ -239,10 +271,10 @@ export class ArnoldSimulation {
             this.step++;
             const t = this.step;
             
-            const ga = this.getGradient(this.wA);
+            this.getGradient(this.wA, null, this.gradA_scratch);
             let gnormA = 0;
             for(let j=0; j<this.k; j++){
-                const gj = ga.grad[j];
+                const gj = this.gradA_scratch[j];
                 gnormA += gj*gj;
                 this.mA[j] = this.cfg.beta1 * this.mA[j] + (1 - this.cfg.beta1) * gj;
                 this.vA[j] = this.beta2 * this.vA[j] + (1 - this.beta2) * (gj * gj);
@@ -253,10 +285,10 @@ export class ArnoldSimulation {
             gnormA = Math.sqrt(gnormA);
             if(gnormA > maxGradA) maxGradA = gnormA;
             
-            const gb = this.getGradient(this.wB);
+            this.getGradient(this.wB, null, this.gradB_scratch);
             let gnormB = 0;
             for(let j=0; j<this.k; j++){
-                const gj = gb.grad[j];
+                const gj = this.gradB_scratch[j];
                 gnormB += gj*gj;
                 this.mB[j] = this.cfg.beta1 * this.mB[j] + (1 - this.cfg.beta1) * gj;
                 this.vB[j] = this.beta2 * this.vB[j] + (1 - this.beta2) * (gj * gj);
@@ -278,19 +310,16 @@ export class ArnoldSimulation {
     
     stepForward(steps: number): SimulationResult {
         const metrics: SimulationMetrics[] = [];
-        let ahA: any = null;
-        let ahB: any = null;
         
         for(let s=0; s<steps; s++) {
             this.step++;
             const t = this.step;
             
             // Trial A update
-            const ga = this.getGradient(this.wA);
-            ahA = ga.A;
+            this.getGradient(this.wA, this.ahA_buffer, this.gradA_scratch);
             let gnormA = 0;
             for(let j=0; j<this.k; j++){
-                const gj = ga.grad[j];
+                const gj = this.gradA_scratch[j];
                 gnormA += gj*gj;
                 this.mA[j] = this.cfg.beta1 * this.mA[j] + (1 - this.cfg.beta1) * gj;
                 this.vA[j] = this.beta2 * this.vA[j] + (1 - this.beta2) * (gj * gj);
@@ -301,11 +330,10 @@ export class ArnoldSimulation {
             gnormA = Math.sqrt(gnormA);
             
             // Trial B update
-            const gb = this.getGradient(this.wB);
-            ahB = gb.A;
+            this.getGradient(this.wB, this.ahB_buffer, this.gradB_scratch);
             let gnormB = 0;
             for(let j=0; j<this.k; j++){
-                const gj = gb.grad[j];
+                const gj = this.gradB_scratch[j];
                 gnormB += gj*gj;
                 this.mB[j] = this.cfg.beta1 * this.mB[j] + (1 - this.cfg.beta1) * gj;
                 this.vB[j] = this.beta2 * this.vB[j] + (1 - this.beta2) * (gj * gj);
@@ -343,8 +371,8 @@ export class ArnoldSimulation {
             metrics,
             step: this.step,
             done: this.step >= 5000,
-            AhA: ahA,
-            AhB: ahB
+            AhA: this.ahA_buffer,
+            AhB: this.ahB_buffer
         };
     }
 }
