@@ -1,0 +1,6 @@
+{
+  "name": "RoPE Topology Sandbox",
+  "description": "A minimal machine learning sandbox investigating the topological stability of Rotary Position Embeddings (RoPE) and invariant tori using Dissipative KAM Theory.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
