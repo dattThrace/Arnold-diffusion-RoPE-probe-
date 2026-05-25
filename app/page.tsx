@@ -6,6 +6,7 @@ import {
   ScatterChart, Scatter, ZAxis
 } from 'recharts';
 import { Play, RotateCcw, Activity, Settings, Cpu, Download, Video } from 'lucide-react';
+import Link from 'next/link';
 import { ArnoldSimulation, SimulationConfig, SimulationResult, SimulationMetrics } from '@/lib/engine';
 
 function AttentionHeatmap({ 
@@ -220,14 +221,25 @@ export default function ArnoldDiffusionSandbox() {
         <div className="min-h-screen bg-slate-900 text-slate-100 font-sans p-6 md:p-8 flex flex-col xl:flex-row gap-8">
             {/* Sidebar Controls */}
             <aside className="w-full xl:w-80 flex-shrink-0 space-y-8">
-                <div className="space-y-2">
-                    <h1 className="text-2xl font-semibold tracking-tight text-white flex items-center gap-2">
-                        <Activity className="w-6 h-6 text-orange-500" />
-                        Arnold Diffusion
-                    </h1>
-                    <p className="text-slate-400 text-sm leading-relaxed">
-                        RoPE Phase Space Dynamics mapping AdamW momentum scatter along resonant invariant tori.
-                    </p>
+                <div className="space-y-4">
+                    <div className="flex bg-slate-800 rounded-lg p-1 border border-slate-700 w-fit">
+                        <span className="px-4 py-2 text-sm font-medium rounded-md bg-slate-700 text-white shadow-sm">
+                            Diagnostics
+                        </span>
+                        <Link href="/sweep" className="px-4 py-2 text-sm font-medium rounded-md text-slate-400 hover:text-slate-200 transition-colors">
+                            Context Sweep
+                        </Link>
+                    </div>
+
+                    <div className="space-y-2">
+                        <h1 className="text-2xl font-semibold tracking-tight text-white flex items-center gap-2">
+                            <Activity className="w-6 h-6 text-orange-500" />
+                            Arnold Diffusion
+                        </h1>
+                        <p className="text-slate-400 text-sm leading-relaxed">
+                            RoPE Phase Space Dynamics mapping AdamW momentum scatter along resonant invariant tori.
+                        </p>
+                    </div>
                 </div>
 
                 <div className="bg-slate-800 rounded-xl p-5 border border-slate-700 space-y-6">

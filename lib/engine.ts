@@ -231,6 +231,51 @@ export class ArnoldSimulation {
         return Math.sqrt(s);
     }
     
+    runBurst(steps: number): { maxGradA: number, maxGradB: number, driftA: number, driftB: number } {
+        let maxGradA = 0;
+        let maxGradB = 0;
+
+        for (let s = 0; s < steps; s++) {
+            this.step++;
+            const t = this.step;
+            
+            const ga = this.getGradient(this.wA);
+            let gnormA = 0;
+            for(let j=0; j<this.k; j++){
+                const gj = ga.grad[j];
+                gnormA += gj*gj;
+                this.mA[j] = this.cfg.beta1 * this.mA[j] + (1 - this.cfg.beta1) * gj;
+                this.vA[j] = this.beta2 * this.vA[j] + (1 - this.beta2) * (gj * gj);
+                const mh = this.mA[j] / (1 - Math.pow(this.cfg.beta1, t));
+                const vh = this.vA[j] / (1 - Math.pow(this.beta2, t));
+                this.wA[j] = this.wA[j] - (this.cfg.alpha * mh) / (Math.sqrt(vh) + 1e-8);
+            }
+            gnormA = Math.sqrt(gnormA);
+            if(gnormA > maxGradA) maxGradA = gnormA;
+            
+            const gb = this.getGradient(this.wB);
+            let gnormB = 0;
+            for(let j=0; j<this.k; j++){
+                const gj = gb.grad[j];
+                gnormB += gj*gj;
+                this.mB[j] = this.cfg.beta1 * this.mB[j] + (1 - this.cfg.beta1) * gj;
+                this.vB[j] = this.beta2 * this.vB[j] + (1 - this.beta2) * (gj * gj);
+                const mh = this.mB[j] / (1 - Math.pow(this.cfg.beta1, t));
+                const vh = this.vB[j] / (1 - Math.pow(this.beta2, t));
+                this.wB[j] = this.wB[j] - (this.cfg.alpha * mh) / (Math.sqrt(vh) + 1e-8);
+            }
+            gnormB = Math.sqrt(gnormB);
+            if(gnormB > maxGradB) maxGradB = gnormB;
+        }
+
+        return {
+            maxGradA,
+            maxGradB,
+            driftA: this.getDrift(this.wA, this.wA0),
+            driftB: this.getDrift(this.wB, this.wB0)
+        };
+    }
+    
     stepForward(steps: number): SimulationResult {
         const metrics: SimulationMetrics[] = [];
         let ahA: any = null;
